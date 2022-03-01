@@ -1,0 +1,13 @@
+*.MP4
+*.m4v
+*.mp4
+__pycache__/*
+*.vscode
+solution/outputs/*
+inputs/*
+*.pyz
+*.pyc
+.DS_Store
+*.pt
+*.t7
+*.lprof
