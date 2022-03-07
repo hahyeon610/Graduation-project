@@ -613,7 +613,6 @@ def gtballs_2XYranges(groundtruths):
     return bbox_XYranges
 
 
-
 #Misc Functions
 def draw_testingboxes(img, bbox):
     for box in bbox:
@@ -622,3 +621,20 @@ def draw_testingboxes(img, bbox):
 
         cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
     return
+
+
+#get gt balls/people cnt
+def gt_balls_people_cnt(groundtruths_path):
+    groundtruths = load_labels(groundtruths_path, 1, 1, 0)
+    balls = 0
+    people = 0
+
+    for truth in groundtruths:
+        # ball
+        if truth[0] == 1:
+            balls += 1
+        # people
+        elif truth[0] == 0:
+            people += 1
+    
+    return [balls, people]
