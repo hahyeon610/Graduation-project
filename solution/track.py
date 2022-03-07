@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
-from numpy import random
+from numpy import random, trim_zeros
 import numpy as np
 
 # https://github.com/pytorch/pytorch/issues/3678
@@ -14,7 +14,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, dir_path+'/yolov5')
 
 from yolov5.models.experimental import attempt_load
-from yolov5.utils.datasets import LoadStreams, LoadImages
+from yolov5.utils.datasets import LoadStreams, LoadImages, letterbox
 from yolov5.utils.general import (
     check_img_size, non_max_suppression, apply_classifier, scale_coords, xyxy2xywh)
 from yolov5.utils.torch_utils import load_classifier, time_synchronized
@@ -25,6 +25,8 @@ import yaml
 import solution
 import main 
 
+import pdb
+from matplotlib import pyplot as plt
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 
@@ -98,7 +100,12 @@ def detect(opt, device, half, colorDict, save_img=False):
 
     #Skip Variables
     skipThreshold = 0 #Current number of frames skipped
-    
+
+    # gt ball/person number
+    gt_balls, gt_people  = solution.gt_balls_people_cnt(groundtruths_path)
+    detected_balls, detected_people = 0, 0
+    data_xyxys = np.array([])
+
     for path, img, im0s, vid_cap in dataset:
         if frame_num > 10 and skipThreshold < skipLimit:
             skipThreshold = skipThreshold + 1
@@ -106,6 +113,36 @@ def detect(opt, device, half, colorDict, save_img=False):
             continue
         
         skipThreshold = 0
+
+
+        #pdb.set_trace()
+        #cv2.imshow(path,im0s)
+
+        # 잘 탐지한 경우 img 자르기
+        if gt_balls==detected_balls and gt_people==detected_people:
+            im0s_h, im0s_w = im0s.shape[0], im0s.shape[1]
+            x_, y_, w_, h_ = for_im_trim(data_xyxys, im0s_w, im0s_h, path, im0s)
+            #cv2.imshow(path, im_trim(im0s, , 0, im0s_w, im0s_h))
+            """
+            cv2.imshow(path, im_trim(im0s, x_, y_, w_, h_))
+            if cv2.waitKey(1) == ord('q'):  # q to quit
+                raise StopIteration
+            """
+            im0_ = im_trim(im0s, x_, y_, w_, h_)
+            img = letterbox(im0_, imgsz, stride=stride)[0]
+            # Convert
+            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+            img = np.ascontiguousarray(img)
+
+        """
+        else:
+            cv2.imshow(path, im0s)
+            if cv2.waitKey(1) == ord('q'):  # q to quit
+                raise StopIteration
+        """
+        
+        
+        # 잘 탐지하지 못한 경우 안 자르고 그대로
 
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -124,7 +161,6 @@ def detect(opt, device, half, colorDict, save_img=False):
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
-
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -138,14 +174,42 @@ def detect(opt, device, half, colorDict, save_img=False):
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                if gt_balls==detected_balls and gt_people==detected_people:
+                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0_.shape).round()
+                else:
+                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
                 bbox_xywh = []
                 confs = []
                 clses = []
 
                 # Write results
                 for *xyxy, conf, cls in det:
-                    
+                    #pdb.set_trace()
+                    # img를 잘랐던 경우 좌표에 값 더해주기
+                    if gt_balls==detected_balls and gt_people==detected_people:
+                        x_, y_, w_, h_ = for_im_trim(data_xyxys, im0s_w, im0s_h, path, im0)
+                        
+                        # pdb.set_trace()
+                        
+                        xyxy[0] += x_
+                        xyxy[1] += y_
+                        xyxy[2] += x_
+                        xyxy[3] += y_
+                        
+                        """
+                        x_m = min(int(xyxy[0].item()), int(xyxy[2].item()))
+                        y_m = min(int(xyxy[1].item()), int(xyxy[3].item()))
+                        x_M = max(int(xyxy[0].item()), int(xyxy[2].item()))
+                        y_M = max(int(xyxy[1].item()), int(xyxy[3].item()))
+                        w_t = abs(x_M - x_m)
+                        h_t = abs(y_M - y_m)
+                        
+                        cv2.imshow(path, im_trim(im0, int(x_m), int(y_m), int(w_t), int(h_t)))
+                        if cv2.waitKey(1) == ord('q'):  # q to quit
+                            raise StopIteration
+                        """
+
+
                     img_h, img_w, _ = im0.shape  # get image shape
                     x_c, y_c, bbox_w, bbox_h = main.bbox_rel(img_w, img_h, *xyxy)
                     obj = [x_c, y_c, bbox_w, bbox_h]
@@ -179,7 +243,10 @@ def detect(opt, device, half, colorDict, save_img=False):
                                     id_mapping[DS_ID[4]] = int(real_ID[0])
                 else:
                     outputs = deepsort.update(xywhs, confss, clses, im0)
-
+                
+                # count detected balls/people
+                detected_balls = 0
+                detected_people = 0
 
                 # draw boxes for visualization
                 if len(outputs) > 0:
@@ -187,6 +254,16 @@ def detect(opt, device, half, colorDict, save_img=False):
                     identities = outputs[:, 4]
                     clses = outputs[:, 5]
                     scores = outputs[:, 6]
+
+                    for cls in clses:
+                    # ball
+                        if cls == 1:
+                           detected_balls += 1
+                        elif cls == 0:
+                           detected_people += 1
+
+                    data_xyxys = outputs[:, :4]
+
                     
                     #Temp solution to get correct id's 
                     mapped_id_list = []
@@ -197,7 +274,7 @@ def detect(opt, device, half, colorDict, save_img=False):
                             mapped_id_list.append(ids)
 
                     ball_detect, frame_catch_pairs, ball_person_pairs = solution.detect_catches(im0, bbox_xyxy, clses, mapped_id_list, frame_num, colorDict, frame_catch_pairs, ball_person_pairs, colorOrder, save_img)
-    
+
                     t3 = time_synchronized()
                     if (save_img):
                         main.draw_boxes(im0, bbox_xyxy, [names[i] for i in clses], scores, ball_detect, id_mapping, identities)
@@ -213,6 +290,7 @@ def detect(opt, device, half, colorDict, save_img=False):
             
             # Stream results
             if view_img:
+                #im0 = im_trim(im0, 700, 700, 500, 500)
                 cv2.imshow(p, im0)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
@@ -256,3 +334,31 @@ def detect(opt, device, half, colorDict, save_img=False):
             os.system('open ' + save_path)
 
     return
+
+def im_trim(img, x, y, w, h):
+    imgtrim= img[y:y+h, x:x+w]
+    return imgtrim
+
+
+def for_im_trim(data_xyxys, img_w, img_h, path, im0s):
+    x_m, y_m, x_M, y_M = img_w, img_h, 0, 0
+    tmp_w, tmp_h = 0, 0
+
+    for xyxy in data_xyxys:
+        x1, y1, x2, y2 = [int(i) for i in xyxy]
+        x_m = min(x_m, x1, x2)
+        y_m = min(y_m, y1, y2)
+        x_M = max(x_M, x1, x2)
+        y_M = max(y_M, y1, y2)
+
+        tmp_w = max(tmp_w, abs(x2-x1))
+        tmp_h = max(tmp_h, abs(y2-y1))
+
+    x1 = x_m - tmp_w//2 if x_m - tmp_w//2 > 0 else 0
+    y1 = y_m - tmp_w//2 if y_m - tmp_w//2 > 0 else 0
+    x2 = x_M + tmp_w//2 if x_M + tmp_w//2 < img_w else img_w
+    y2 = y_M + tmp_w//2 if y_M + tmp_w//2 < img_h else img_h
+    x_, y_ = x1, y1
+    w_, h_ = abs(x2-x1), abs(y2-y1)
+
+    return [x_, y_, w_, h_]
