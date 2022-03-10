@@ -1,6 +1,7 @@
 import os
 import platform
 from pathlib import Path
+from re import X
 
 import cv2
 import torch
@@ -113,35 +114,15 @@ def detect(opt, device, half, colorDict, save_img=False):
             continue
         
         skipThreshold = 0
-
-
-        #pdb.set_trace()
-        #cv2.imshow(path,im0s)
-
+        
         # 잘 탐지한 경우 img 자르기
         if gt_balls==detected_balls and gt_people==detected_people:
             im0s_h, im0s_w = im0s.shape[0], im0s.shape[1]
-            x_, y_, w_, h_ = for_im_trim(data_xyxys, im0s_w, im0s_h, path, im0s)
-            #cv2.imshow(path, im_trim(im0s, , 0, im0s_w, im0s_h))
-            """
-            cv2.imshow(path, im_trim(im0s, x_, y_, w_, h_))
-            if cv2.waitKey(1) == ord('q'):  # q to quit
-                raise StopIteration
-            """
-            im0_ = im_trim(im0s, x_, y_, w_, h_)
-            img = letterbox(im0_, imgsz, stride=stride)[0]
-            # Convert
-            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-            img = np.ascontiguousarray(img)
+            x_, y_, w_, h_, trans_x, trans_y, trans_w, trans_h = for_img_trim(data_xyxys, im0s_w, im0s_h, imgsz, stride)
+            im0_ = img_trim(im0s, trans_x, trans_y, trans_w, trans_h)
 
-        """
-        else:
-            cv2.imshow(path, im0s)
-            if cv2.waitKey(1) == ord('q'):  # q to quit
-                raise StopIteration
-        """
-        
-        
+            img = letterbox_trim(img, x_, y_, w_, h_)
+
         # 잘 탐지하지 못한 경우 안 자르고 그대로
 
         img = torch.from_numpy(img).to(device)
@@ -184,31 +165,11 @@ def detect(opt, device, half, colorDict, save_img=False):
 
                 # Write results
                 for *xyxy, conf, cls in det:
-                    #pdb.set_trace()
-                    # img를 잘랐던 경우 좌표에 값 더해주기
                     if gt_balls==detected_balls and gt_people==detected_people:
-                        x_, y_, w_, h_ = for_im_trim(data_xyxys, im0s_w, im0s_h, path, im0)
-                        
-                        # pdb.set_trace()
-                        
-                        xyxy[0] += x_
-                        xyxy[1] += y_
-                        xyxy[2] += x_
-                        xyxy[3] += y_
-                        
-                        """
-                        x_m = min(int(xyxy[0].item()), int(xyxy[2].item()))
-                        y_m = min(int(xyxy[1].item()), int(xyxy[3].item()))
-                        x_M = max(int(xyxy[0].item()), int(xyxy[2].item()))
-                        y_M = max(int(xyxy[1].item()), int(xyxy[3].item()))
-                        w_t = abs(x_M - x_m)
-                        h_t = abs(y_M - y_m)
-                        
-                        cv2.imshow(path, im_trim(im0, int(x_m), int(y_m), int(w_t), int(h_t)))
-                        if cv2.waitKey(1) == ord('q'):  # q to quit
-                            raise StopIteration
-                        """
-
+                        xyxy[0] += trans_x
+                        xyxy[1] += trans_y
+                        xyxy[2] += trans_x
+                        xyxy[3] += trans_y
 
                     img_h, img_w, _ = im0.shape  # get image shape
                     x_c, y_c, bbox_w, bbox_h = main.bbox_rel(img_w, img_h, *xyxy)
@@ -335,15 +296,35 @@ def detect(opt, device, half, colorDict, save_img=False):
 
     return
 
-def im_trim(img, x, y, w, h):
+
+def img_trim(img, x, y, w, h):
     imgtrim= img[y:y+h, x:x+w]
     return imgtrim
 
+def letterbox_trim(img, x, y, w, h):
+    imgtrim= img[:, y:y+h, x:x+w]
+    return imgtrim
 
-def for_im_trim(data_xyxys, img_w, img_h, path, im0s):
-    x_m, y_m, x_M, y_M = img_w, img_h, 0, 0
+# version 1 - 통으로 잘라서 detect
+def for_img_trim(data_xyxys, im0s_w, im0s_h, imgsz, stride):
+    # im0s_w, h는 원본에 대한 정보
+    x_m, y_m, x_M, y_M = im0s_w, im0s_h, 0, 0 
     tmp_w, tmp_h = 0, 0
 
+    r = min(imgsz / im0s_h, imgsz / im0s_w)
+
+    # img_w, img_h - unpadding letter box에 대한 정보
+    img_w, img_h = int(round(im0s_w * r)), int(round(im0s_h * r))
+
+    # wh padding
+    dw, dh = imgsz - img_w, imgsz - img_h
+    dw, dh = np.mod(dw, stride), np.mod(dh, stride)
+    dw /= 2
+    dh /= 2
+    # 좌표 구하고 이거 더해줘야 함 (x_m + dw, y_m + dh)
+    dw, dh = int(round(dw - 0.1)), int(round(dh - 0.1))
+
+    # 원본에서 자를 부분 정리
     for xyxy in data_xyxys:
         x1, y1, x2, y2 = [int(i) for i in xyxy]
         x_m = min(x_m, x1, x2)
@@ -356,9 +337,38 @@ def for_im_trim(data_xyxys, img_w, img_h, path, im0s):
 
     x1 = x_m - tmp_w//2 if x_m - tmp_w//2 > 0 else 0
     y1 = y_m - tmp_w//2 if y_m - tmp_w//2 > 0 else 0
-    x2 = x_M + tmp_w//2 if x_M + tmp_w//2 < img_w else img_w
-    y2 = y_M + tmp_w//2 if y_M + tmp_w//2 < img_h else img_h
-    x_, y_ = x1, y1
-    w_, h_ = abs(x2-x1), abs(y2-y1)
+    x2 = x_M + tmp_h//2 if x_M + tmp_h//2 < im0s_w else im0s_w
+    y2 = y_M + tmp_h//2 if y_M + tmp_h//2 < im0s_h else im0s_h
 
-    return [x_, y_, w_, h_]
+    # x, y, w, h coordinate 변경 - 원본 -> unpadding letter box
+    dx = im0s_w // img_w
+    dy = im0s_h // img_h
+    nx_m = x_m // dx
+    ny_m = y_m // dy
+    nx_M = x_M // dx + 1 if x_M % dx != 0 else x_M // dx
+    ny_M = y_M // dy + 1 if y_M % dy != 0 else y_M // dy
+
+    x, y = nx_m, ny_m
+    w, h = abs(nx_M - nx_m), abs(ny_M - ny_m)
+
+    # 32의 배수 맞추는 작업 (w, h가 각각 32의 배수가 아닐 경우 좀더 늘려주는 변환이 필요)
+    if w % stride != 0 :
+        tmp = stride - w % stride # 32에 맞춰 주기위해 늘려줄 값
+        if x >= tmp - tmp // 2:
+            x -= tmp - tmp // 2
+        else:
+            x = 0
+        w += tmp
+
+    if h % stride != 0 :
+        tmp = stride - h % stride # 32에 맞춰 주기위해 늘려줄 값
+        if y >= tmp - tmp // 2:
+            y -= tmp - tmp // 2
+        else:
+            y = 0
+        h += tmp
+
+    trans_x, trans_y = x * dx, y * dy
+    trans_w, trans_h = w * dx, h * dy
+
+    return [x + dw, y + dh, w, h, trans_x, trans_y, trans_w, trans_h]
