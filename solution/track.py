@@ -114,16 +114,6 @@ def detect(opt, device, half, colorDict, save_img=False):
             continue
         
         skipThreshold = 0
-        
-        # 잘 탐지한 경우 img 자르기
-        if gt_balls==detected_balls and gt_people==detected_people:
-            im0s_h, im0s_w = im0s.shape[0], im0s.shape[1]
-            x_, y_, w_, h_, trans_x, trans_y, trans_w, trans_h = for_img_trim(data_xyxys, im0s_w, im0s_h, imgsz, stride)
-            im0_ = img_trim(im0s, trans_x, trans_y, trans_w, trans_h)
-
-            img = letterbox_trim(img, x_, y_, w_, h_)
-
-        # 잘 탐지하지 못한 경우 안 자르고 그대로
 
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -131,16 +121,52 @@ def detect(opt, device, half, colorDict, save_img=False):
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
-        # Inference
-        t1 = time_synchronized()
-        pred = model(img, augment=opt.augment)[0]
+        # 잘 탐지한 경우 img 자르기
+        if gt_balls==detected_balls and gt_people==detected_people:
+            im0s_h, im0s_w = im0s.shape[0], im0s.shape[1]
+            pred = []
+            tmp = []
+            t1 = time_synchronized()
 
-        # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+            for xyxy in data_xyxys:
+                x_, y_, w_, h_ = for_img_trim(xyxy, im0s_w, im0s_h, imgsz, stride)
+                img_ = letterbox_trim(img, x_, y_, w_, h_)
+                
+                # Inference
+                pred_tmp = model(img_, augment=opt.augment)[0]
 
-        # Apply Classifier
-        if classify:
-            pred = apply_classifier(pred, modelc, img, im0s)
+                for i in range(len(pred_tmp[0])):
+                    pred_tmp[0][i][0] += x_
+                    pred_tmp[0][i][1] += y_
+                    pred_tmp[0][i][2] += x_
+                    pred_tmp[0][i][3] += y_
+
+                for i in range(len(pred_tmp[0])):
+                    tmp.append(pred_tmp[0][i].tolist())
+
+            pred.append(tmp)    
+            pred = torch.tensor(pred)    
+            
+            # Apply NMS
+            pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+
+            # Apply Classifier
+            if classify:
+                pred = apply_classifier(pred, modelc, img, im0s)
+
+        # 잘 탐지하지 못한 경우 안 자르고 그대로
+        else :
+            # Inference
+            t1 = time_synchronized()
+            pred = model(img, augment=opt.augment)[0]
+
+            # Apply NMS
+            pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+
+            # Apply Classifier
+            if classify:
+                pred = apply_classifier(pred, modelc, img, im0s)           
+
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -148,29 +174,21 @@ def detect(opt, device, half, colorDict, save_img=False):
                 p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
             else:
                 p, s, im0 = path, '', im0s
-
+            
             save_path = str(Path(out) / Path(p).name)
             txt_path = str(Path(out) / Path(p).stem) + ('_%g' % dataset.frame if dataset.mode == 'video' else '')
             s += '%gx%g ' % img.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
-                if gt_balls==detected_balls and gt_people==detected_people:
-                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0_.shape).round()
-                else:
-                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
                 bbox_xywh = []
                 confs = []
                 clses = []
 
                 # Write results
                 for *xyxy, conf, cls in det:
-                    if gt_balls==detected_balls and gt_people==detected_people:
-                        xyxy[0] += trans_x
-                        xyxy[1] += trans_y
-                        xyxy[2] += trans_x
-                        xyxy[3] += trans_y
-
                     img_h, img_w, _ = im0.shape  # get image shape
                     x_c, y_c, bbox_w, bbox_h = main.bbox_rel(img_w, img_h, *xyxy)
                     obj = [x_c, y_c, bbox_w, bbox_h]
@@ -195,7 +213,6 @@ def detect(opt, device, half, colorDict, save_img=False):
                         confss = tensor.new_ones((groundtruths.shape[0], 1))
                         clses = groundtruths[:,0:1]
                         outputs = deepsort.update(xywhs, confss, clses, im0)
-                    
                     
                     if frame_num >= 2:
                         for real_ID in groundtruths[:,1:].tolist():
@@ -242,19 +259,19 @@ def detect(opt, device, half, colorDict, save_img=False):
                 else:
                     t3 = time_synchronized()
 
-
             #Inference Time
             fps = (1/(t3 - t1))
             fpses.append(fps)
             print('FPS=%.2f' % fps)
             
-            
+            """
             # Stream results
             if view_img:
                 #im0 = im_trim(im0, 700, 700, 500, 500)
                 cv2.imshow(p, im0)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
+            """
 
             # Save results (image with detections)
             if save_img:
@@ -276,6 +293,14 @@ def detect(opt, device, half, colorDict, save_img=False):
                         h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
                     vid_writer.write(im0)
+
+            # Stream results
+            if view_img:
+                #im0 = im_trim(im0, 700, 700, 500, 500)
+                cv2.imshow(p, im0)
+                if cv2.waitKey(1) == ord('q'):  # q to quit
+                    raise StopIteration
+
             frame_num += 1
                     
         
@@ -302,11 +327,11 @@ def img_trim(img, x, y, w, h):
     return imgtrim
 
 def letterbox_trim(img, x, y, w, h):
-    imgtrim= img[:, y:y+h, x:x+w]
+    imgtrim= img[:,:, y:y+h, x:x+w]
     return imgtrim
 
 # version 1 - 통으로 잘라서 detect
-def for_img_trim(data_xyxys, im0s_w, im0s_h, imgsz, stride):
+def for_img_trim(xyxy, im0s_w, im0s_h, imgsz, stride):
     # im0s_w, h는 원본에 대한 정보
     x_m, y_m, x_M, y_M = im0s_w, im0s_h, 0, 0 
     tmp_w, tmp_h = 0, 0
@@ -325,15 +350,14 @@ def for_img_trim(data_xyxys, im0s_w, im0s_h, imgsz, stride):
     dw, dh = int(round(dw - 0.1)), int(round(dh - 0.1))
 
     # 원본에서 자를 부분 정리
-    for xyxy in data_xyxys:
-        x1, y1, x2, y2 = [int(i) for i in xyxy]
-        x_m = min(x_m, x1, x2)
-        y_m = min(y_m, y1, y2)
-        x_M = max(x_M, x1, x2)
-        y_M = max(y_M, y1, y2)
+    x1, y1, x2, y2 = [int(i) for i in xyxy]
+    x_m = min(x_m, x1, x2)
+    y_m = min(y_m, y1, y2)
+    x_M = max(x_M, x1, x2)
+    y_M = max(y_M, y1, y2)
 
-        tmp_w = max(tmp_w, abs(x2-x1))
-        tmp_h = max(tmp_h, abs(y2-y1))
+    tmp_w = abs(x2-x1)
+    tmp_h = abs(y2-y1)
 
     x1 = x_m - tmp_w//2 if x_m - tmp_w//2 > 0 else 0
     y1 = y_m - tmp_w//2 if y_m - tmp_w//2 > 0 else 0
@@ -368,7 +392,4 @@ def for_img_trim(data_xyxys, im0s_w, im0s_h, imgsz, stride):
             y = 0
         h += tmp
 
-    trans_x, trans_y = x * dx, y * dy
-    trans_w, trans_h = w * dx, h * dy
-
-    return [x + dw, y + dh, w, h, trans_x, trans_y, trans_w, trans_h]
+    return [x + dw, y + dh, w, h]
